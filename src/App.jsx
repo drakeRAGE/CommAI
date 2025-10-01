@@ -1,213 +1,254 @@
 import React, { useState, useRef } from "react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ResponsiveContainer,
+} from "recharts";
 
-export default function PracticeDemoPro() {
-  const [transcript, setTranscript] = useState("");
+export default function SpeakingPractice() {
   const [isRecording, setIsRecording] = useState(false);
-  const [feedback, setFeedback] = useState(null);
-  const [history, setHistory] = useState([]);
+  const [transcript, setTranscript] = useState("");
+  const [sessionHistory, setSessionHistory] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [timer, setTimer] = useState(0);
   const recognitionRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Initialize Speech Recognition
-  const initRecognition = () => {
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Your browser does not support Speech Recognition.");
-      return null;
+  const fillerWords = ["uh", "um", "like", "you know", "actually", "basically", "literally"];
+
+  const startRecording = () => {
+    if (!("webkitSpeechRecognition" in window)) {
+      alert("Speech recognition not supported in this browser.");
+      return;
     }
-    const recognition = new SpeechRecognition();
+
+    const recognition = new window.webkitSpeechRecognition();
     recognition.lang = "en-US";
+    recognition.interimResults = true;
     recognition.continuous = true;
 
     recognition.onresult = (event) => {
       let text = "";
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        text += event.results[i][0].transcript + " ";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        text += event.results[i][0].transcript;
       }
-      setTranscript(text.trim());
+      setTranscript(text);
     };
 
-    recognition.onerror = (err) => {
-      console.error("Recognition error:", err);
-      setIsRecording(false);
-    };
+    recognition.start();
+    recognitionRef.current = recognition;
+    setIsRecording(true);
 
-    return recognition;
+    // Start timer
+    setTimer(0);
+    timerRef.current = setInterval(() => {
+      setTimer((prev) => prev + 1);
+    }, 1000);
   };
 
-  // Start/Stop recording
-  const toggleRecording = () => {
-    if (!isRecording) {
-      recognitionRef.current = initRecognition();
-      if (recognitionRef.current) {
-        recognitionRef.current.start();
-        setIsRecording(true);
-      }
-    } else {
+  const stopRecording = () => {
+    if (recognitionRef.current) {
       recognitionRef.current.stop();
-      setIsRecording(false);
     }
-  };
-
-  // Analyze transcript: filler words, vocabulary, fluency
-  const analyzeTranscript = async () => {
-    if (!transcript) return;
-
-    let fillerWords = ["uh", "um", "like", "you know", "actually"];
-    let fillerCount = 0;
-    let words = transcript.split(/\s+/);
-
-    words.forEach((w) => {
-      if (fillerWords.includes(w.toLowerCase())) fillerCount++;
-    });
-
-    // Vocabulary suggestions (repeated words)
-    let wordFrequency = {};
-    words.forEach((w) => {
-      let lw = w.toLowerCase();
-      wordFrequency[lw] = (wordFrequency[lw] || 0) + 1;
-    });
-
-    let repeatedWords = Object.entries(wordFrequency)
-      .filter(([w, count]) => count > 3 && w.length > 3)
-      .map(([w]) => w);
-
-    // Grammar check (LanguageTool API, optional)
-    let grammarSuggestions = [];
-    try {
-      let res = await fetch("https://api.languagetool.org/v2/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          text: transcript,
-          language: "en-US",
-        }),
-      });
-      let data = await res.json();
-      grammarSuggestions = data.matches.map((m) => ({
-        error: transcript.substring(m.offset, m.offset + m.length),
-        suggestion: m.replacements[0]?.value || "—",
-        message: m.message,
-      }));
-    } catch (err) {
-      console.log("Grammar API failed, skipping...");
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
     }
 
-    // Fluency score (basic heuristic)
-    let fluencyScore = 10;
-    if (fillerCount > 5) fluencyScore -= 2;
-    if (words.length < 10) fluencyScore -= 2;
-    if (repeatedWords.length > 0) fluencyScore -= 1;
-    if (fluencyScore < 0) fluencyScore = 0;
+    const newSuggestions = generateSuggestions(transcript, timer);
+    setSuggestions(newSuggestions.feedback);
 
-    // Tone detection (very basic)
-    let tone =
-      fillerCount > words.length * 0.1
-        ? "Hesitant"
-        : words.length > 15
-          ? "Confident"
-          : "Neutral";
-
-    const report = {
-      fillerCount,
-      repeatedWords,
-      grammarSuggestions,
-      fluencyScore,
-      tone,
-    };
-
-    setFeedback(report);
-
-    // Save session in memory
-    setHistory([
-      ...history,
+    setSessionHistory((prev) => [
       {
         text: transcript,
-        feedback: report,
-        time: new Date().toLocaleTimeString(),
+        duration: timer,
+        feedback: newSuggestions.feedback,
+        score: newSuggestions.score,
+        fillerStats: newSuggestions.fillerStats,
       },
+      ...prev,
     ]);
 
-    setTranscript("");
+    setIsRecording(false);
+  };
+
+  const generateSuggestions = (text, duration) => {
+    let feedback = [];
+    let score = 10;
+
+    // --- FILLER WORD DETECTION ---
+    let fillerStats = {};
+    fillerWords.forEach((word) => {
+      const regex = new RegExp(`\\b${word}\\b`, "gi");
+      const count = (text.match(regex) || []).length;
+      if (count > 0) {
+        fillerStats[word] = count;
+        feedback.push(`⚠️ You used "${word}" ${count} time(s). Try reducing it.`);
+        score -= count >= 3 ? 2 : 1;
+      }
+    });
+
+    // --- SHORT SPEECH CHECK ---
+    if (text.split(" ").length < 15) {
+      feedback.push("🗣️ Try speaking in longer sentences with more details.");
+      score -= 2;
+    }
+
+    // --- SENTENCE STRUCTURE CHECK ---
+    if (!/[.?!]/.test(text)) {
+      feedback.push("✍️ Work on finishing sentences with proper endings.");
+      score -= 1;
+    }
+
+    // --- VOCABULARY TIP ---
+    if (text.includes("good")) {
+      feedback.push("💡 Instead of 'good', try 'excellent', 'fantastic', or 'wonderful'.");
+    }
+
+    // --- DURATION ENCOURAGEMENT ---
+    if (duration < 30) {
+      feedback.push("⏱️ Try to speak for at least 1 minute for better practice.");
+      score -= 1;
+    }
+
+    if (feedback.length === 0) {
+      feedback.push("✅ Great job! Fluent and clear.");
+    }
+
+    if (score < 0) score = 0;
+    return { feedback, score, fillerStats };
   };
 
   return (
-    <div className="max-w-2xl mx-auto p-6 bg-white shadow-lg rounded-xl">
-      <h2 className="text-2xl font-bold mb-4">🎙 AI Practice Demo Pro</h2>
+    <div className="min-h-screen bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 flex justify-center items-center p-6">
+      <div className="bg-white shadow-2xl rounded-2xl w-full max-w-4xl p-8">
+        {/* Title */}
+        <h1 className="text-3xl font-bold text-center text-indigo-600 mb-6">
+          🎙️ AI Speaking Practice
+        </h1>
 
-      {/* Recording Section */}
-      <div className="mb-4">
-        <button
-          onClick={toggleRecording}
-          className={`px-4 py-2 rounded-lg font-semibold ${isRecording ? "bg-red-500 text-white" : "bg-green-500 text-white"
-            }`}
-        >
-          {isRecording ? "Stop Recording" : "Start Recording"}
-        </button>
-      </div>
+        {/* Live Timer */}
+        {isRecording && (
+          <div className="text-center text-lg font-semibold text-red-500 mb-4">
+            ⏱️ Recording... {timer}s
+          </div>
+        )}
 
-      {/* Transcript */}
-      <div className="mb-4">
-        <h3 className="font-semibold">Transcript:</h3>
-        <p className="p-2 border rounded bg-gray-50 min-h-[50px]">
-          {transcript || "Speak something..."}
-        </p>
-      </div>
+        {/* Transcript Section */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-2 text-gray-700">
+            Live Transcript
+          </h2>
+          <div className="bg-gray-100 p-4 rounded-lg h-32 overflow-y-auto border border-gray-200">
+            {transcript || (
+              <span className="text-gray-400">Your speech will appear here...</span>
+            )}
+          </div>
+        </div>
 
-      {/* Analyze Button */}
-      <div className="mb-4">
-        <button
-          onClick={analyzeTranscript}
-          className="bg-blue-500 text-white px-4 py-2 rounded-lg"
-          disabled={!transcript}
-        >
-          Analyze & Get Feedback
-        </button>
-      </div>
-
-      {/* Feedback Section */}
-      {feedback && (
-        <div className="p-4 border rounded bg-yellow-50 mb-6">
-          <h3 className="font-semibold text-lg">📊 Feedback Report</h3>
-          <p>📝 Fluency Score: <strong>{feedback.fluencyScore}/10</strong></p>
-          <p>🎤 Tone Detected: <strong>{feedback.tone}</strong></p>
-          <p>⏳ Filler Words Used: <strong>{feedback.fillerCount}</strong></p>
-          {feedback.repeatedWords.length > 0 && (
-            <p>
-              🔁 Repeated Words: {feedback.repeatedWords.join(", ")}
-            </p>
-          )}
-          {feedback.grammarSuggestions.length > 0 && (
-            <div className="mt-2">
-              <h4 className="font-semibold">Grammar Suggestions:</h4>
-              <ul className="list-disc pl-5">
-                {feedback.grammarSuggestions.map((g, idx) => (
-                  <li key={idx}>
-                    ❌ <em>{g.error}</em> → ✅ {g.suggestion} ({g.message})
-                  </li>
-                ))}
-              </ul>
-            </div>
+        {/* Recording Controls */}
+        <div className="flex justify-center mb-6">
+          {!isRecording ? (
+            <button
+              onClick={startRecording}
+              className="px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-semibold rounded-full shadow-lg transition"
+            >
+              ▶️ Start Recording
+            </button>
+          ) : (
+            <button
+              onClick={stopRecording}
+              className="px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-full shadow-lg transition"
+            >
+              ⏹️ Stop Recording
+            </button>
           )}
         </div>
-      )}
 
-      {/* History Section */}
-      <div>
-        <h3 className="font-semibold mb-2">🕒 Session History:</h3>
-        {history.length === 0 ? (
-          <p className="text-gray-500">No past sessions yet.</p>
-        ) : (
-          <ul className="space-y-3">
-            {history.map((h, idx) => (
-              <li key={idx} className="p-3 border rounded bg-gray-100 text-sm">
-                <p className="font-medium">Session at {h.time}</p>
-                <p><strong>Transcript:</strong> {h.text}</p>
-                <p><strong>Score:</strong> {h.feedback.fluencyScore}/10</p>
-                <p><strong>Tone:</strong> {h.feedback.tone}</p>
+        {/* Suggestions Section */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-2 text-gray-700">
+            💡 Suggestions
+          </h2>
+          <ul className="list-disc pl-6 space-y-1">
+            {suggestions.map((s, idx) => (
+              <li key={idx} className="text-gray-800">
+                {s}
               </li>
             ))}
           </ul>
+        </div>
+
+        {/* Session History */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-2 text-gray-700">
+            📜 Session History
+          </h2>
+          <div className="space-y-3 max-h-40 overflow-y-auto">
+            {sessionHistory.length === 0 && (
+              <p className="text-gray-400">No past sessions yet.</p>
+            )}
+            {sessionHistory.map((session, idx) => (
+              <div
+                key={idx}
+                className="p-3 bg-gray-50 border rounded-lg shadow-sm"
+              >
+                <p className="font-medium text-gray-800">{session.text}</p>
+                <p className="text-sm text-gray-600">⏱️ Duration: {session.duration}s</p>
+                <p className="text-sm text-gray-600">⭐ Fluency Score: {session.score}/10</p>
+                {session.fillerStats && Object.keys(session.fillerStats).length > 0 && (
+                  <div className="mt-2 text-sm text-gray-700">
+                    <strong>Filler Words:</strong>{" "}
+                    {Object.entries(session.fillerStats).map(([word, count], i) => (
+                      <span key={i} className="mr-2">
+                        {word} ({count})
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <ul className="list-disc pl-5 text-sm text-gray-600 mt-1">
+                  {session.feedback.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Chart Section */}
+        {sessionHistory.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-lg font-semibold mb-2 text-gray-700 text-center">
+              📊 Fluency Progress
+            </h2>
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart
+                data={sessionHistory.map((s, i) => ({
+                  id: sessionHistory.length - i,
+                  score: s.score,
+                }))}
+              >
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="id"
+                  label={{ value: "Session", position: "insideBottom", offset: -5 }}
+                />
+                <YAxis domain={[0, 10]} />
+                <Tooltip />
+                <Line
+                  type="monotone"
+                  dataKey="score"
+                  stroke="#4f46e5"
+                  strokeWidth={3}
+                  dot={{ r: 5 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
         )}
       </div>
     </div>
