@@ -127,7 +127,7 @@ export default function SpeakingPractice() {
       <div className="bg-white shadow-2xl rounded-2xl w-full max-w-4xl p-8">
         {/* Title */}
         <h1 className="text-3xl font-bold text-center text-indigo-600 mb-6">
-          🎙️ AI Speaking Practice
+          🎙️ COMM AI - AI Speaking Practice
         </h1>
 
         {/* Live Timer */}
